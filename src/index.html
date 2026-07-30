@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+  <title>Legacy Gym — نظام إدارة النادي</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+  <!-- ============ Loading screen ============ -->
+  <div id="loading" class="loading">
+    <div class="loading-inner">
+      <img src="../assets/logo.png" alt="Legacy Gym" class="loading-logo">
+      <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+      <div class="loading-hint">جارٍ تحميل النظام…</div>
+    </div>
+    <div class="loading-foot">Legacy Gym Management</div>
+  </div>
+
+  <!-- ============ Activation (shown only on an un-activated client machine) ============ -->
+  <div id="activation" class="login hidden">
+    <div class="login-card">
+      <img src="../assets/logo.png" alt="Legacy Gym" class="login-logo">
+      <h1 class="login-title">تفعيل النظام</h1>
+      <p class="login-sub">هذا الجهاز يحتاج إلى تفعيل لمرة واحدة</p>
+
+      <label class="field">
+        <span>رقم هذا الجهاز (Machine ID)</span>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="activation-machine-id" readonly dir="ltr" style="font-family:monospace;letter-spacing:1px">
+          <button type="button" class="btn" id="activation-copy" title="نسخ">نسخ</button>
+        </div>
+      </label>
+      <p class="login-sub" style="margin:10px 0;line-height:1.7">أعطِ هذا الرقم للمطوّر ليمنحك كود التفعيل الخاص بهذا الجهاز.</p>
+
+      <form id="activation-form" autocomplete="off">
+        <label class="field">
+          <span>كود التفعيل</span>
+          <textarea id="activation-code" required placeholder="الصق كود التفعيل هنا" dir="ltr" rows="3" style="font-family:monospace;resize:vertical"></textarea>
+        </label>
+        <div id="activation-error" class="login-error hidden"></div>
+        <button type="submit" class="btn btn-primary btn-block" id="activation-btn">تفعيل</button>
+      </form>
+    </div>
+    <div class="login-foot">© Legacy Gym — تفعيل مدى الحياة لهذا الجهاز، بدون إنترنت</div>
+  </div>
+
+  <!-- ============ Suspended (remote kill-switch) ============ -->
+  <div id="suspended" class="login hidden">
+    <div class="login-card">
+      <img src="../assets/logo.png" alt="Legacy Gym" class="login-logo">
+      <h1 class="login-title">النظام موقوف مؤقتًا</h1>
+      <p class="login-sub" style="line-height:1.9;margin-top:12px">
+        تم إيقاف النظام مؤقتًا.<br>
+        يرجى التواصل مع صاحب السيستم:<br>
+        <b dir="ltr" style="font-size:19px;letter-spacing:0.5px">+961 3 650 440</b>
+      </p>
+      <div class="field" style="margin-top:16px">
+        <span>رقم هذا الجهاز</span>
+        <input type="text" id="suspended-machine-id" readonly dir="ltr" style="font-family:monospace;letter-spacing:1px">
+      </div>
+      <button type="button" class="btn btn-primary btn-block" id="suspended-retry" style="margin-top:14px">إعادة المحاولة</button>
+    </div>
+    <div class="login-foot">© Legacy Gym</div>
+  </div>
+
+  <!-- ============ Login ============ -->
+  <div id="login" class="login hidden">
+    <div class="login-card">
+      <img src="../assets/logo.png" alt="Legacy Gym" class="login-logo">
+      <h1 class="login-title">تسجيل الدخول</h1>
+      <p class="login-sub">نظام إدارة نادي Legacy Gym الرياضي</p>
+
+      <div class="role-tabs" id="role-tabs">
+        <button type="button" class="role-tab active" data-role="admin">مدير</button>
+        <button type="button" class="role-tab" data-role="employee">موظف</button>
+      </div>
+
+      <form id="login-form" autocomplete="off">
+        <label class="field">
+          <span>اسم المستخدم</span>
+          <input type="text" id="login-user" required placeholder="اسم المستخدم">
+        </label>
+        <label class="field">
+          <span>كلمة المرور</span>
+          <input type="password" id="login-pass" required placeholder="••••••••">
+        </label>
+        <div id="login-error" class="login-error hidden"></div>
+        <button type="submit" class="btn btn-primary btn-block" id="login-btn">دخول</button>
+      </form>
+    </div>
+    <div class="login-foot">© Legacy Gym — يعمل محليًا بدون إنترنت</div>
+  </div>
+
+  <!-- ============ App shell ============ -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img src="../assets/logo.png" alt="Legacy Gym" class="sidebar-mark">
+        <div>
+          <div class="sidebar-name">LEGACY <span>GYM</span></div>
+          <div class="sidebar-tag" id="sidebar-gymname">ليجاسي جيم</div>
+        </div>
+      </div>
+      <nav class="sidebar-nav" id="sidebar-nav"></nav>
+      <div class="sidebar-user">
+        <div class="sidebar-user-avatar" id="user-avatar">A</div>
+        <div class="sidebar-user-meta">
+          <div id="user-name">—</div>
+          <div id="user-role" class="muted">—</div>
+        </div>
+        <button class="icon-btn" id="logout-btn" title="تسجيل الخروج" aria-label="تسجيل الخروج">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h2 class="topbar-title" id="page-title">لوحة التحكم</h2>
+        <div class="topbar-side">
+          <div class="topbar-date" id="topbar-date"></div>
+          <div class="topbar-clock" id="topbar-clock"></div>
+        </div>
+      </header>
+      <div class="page" id="page"></div>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="print-notes-root"></div>
+  <div id="toast-root" class="toast-root"></div>
+
+  <script src="js/logic.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/pages/dashboard.js"></script>
+  <script src="js/pages/members.js"></script>
+  <script src="js/pages/subscriptions.js"></script>
+  <script src="js/pages/sales.js"></script>
+  <script src="js/pages/products.js"></script>
+  <script src="js/pages/inventory.js"></script>
+  <script src="js/pages/expenses.js"></script>
+  <script src="js/pages/employees.js"></script>
+  <script src="js/pages/salaries.js"></script>
+  <script src="js/pages/cashbox.js"></script>
+  <script src="js/pages/reports.js"></script>
+  <script src="js/pages/backup.js"></script>
+  <script src="js/pages/activity.js"></script>
+  <script src="js/pages/settings.js"></script>
+  <script src="js/pages/usermanagement.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

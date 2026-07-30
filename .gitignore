@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+*.log
+
+# Local licensing secrets and customer-specific activation notes
+tools/license-private-key.pem
+Kamal Matar.txt
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.vscode/

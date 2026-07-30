@@ -1,0 +1,55 @@
+{
+  "name": "legacy-gym",
+  "productName": "Legacy Gym",
+  "version": "1.0.0",
+  "description": "نظام إدارة نادي Legacy Gym - Legacy Gym Management System",
+  "main": "main/main.js",
+  "author": "Legacy Gym",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/db.test.js",
+    "dist": "electron-builder --dir && node tools/embed-icon.mjs",
+    "dist:installer": "electron-builder --win nsis",
+    "shortcut": "powershell -ExecutionPolicy Bypass -File tools/create-shortcut.ps1"
+  },
+  "dependencies": {
+    "@fontsource/cairo": "^5.1.0",
+    "@fontsource/tajawal": "^5.1.0",
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "rcedit": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.legacygym.app",
+    "productName": "LegacyGym",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main/**/*",
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/sql.js/dist/sql-wasm.js",
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "node_modules/@fontsource/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -501,6 +501,43 @@ function eq(a, b, name) {
   eq(await killswitch.refresh(mid, `http://127.0.0.1:${port2}/tampered`, pub), 'ok', 'tampered signature in file => stays "ok" (fail-open, not lockable by forgery)');
   await new Promise(r => server2.close(r));
 
+  console.log('\n== Security guards (main/guard.js) ==');
+  const guard = require('../main/guard');
+  const ADM = { id: 1, role: 'admin' }, EMP = { id: 2, role: 'employee' };
+  ok(!guard.checkSql('SELECT * FROM members', 'read', undefined).ok, 'raw SQL refused without a logged-in session');
+  ok(guard.checkSql('SELECT * FROM members WHERE id = :id', 'read', EMP).ok, 'employee can read business tables');
+  ok(guard.checkSql("INSERT INTO activity_log(username, action, entity, details, created_at) VALUES(:u,'x','users','',:t)", 'write', EMP).ok,
+    "string literal 'users' inside data does not trip the users-table filter");
+  ok(!guard.checkSql('SELECT id, username FROM users', 'read', EMP).ok, 'employee cannot read the users table');
+  ok(guard.checkSql('SELECT id, username, role FROM users', 'read', ADM).ok, 'admin can list users (no secrets)');
+  ok(!guard.checkSql('SELECT password_hash, salt FROM users', 'read', ADM).ok, 'nobody can read password hashes/salts via raw SQL');
+  ok(!guard.checkSql("UPDATE users SET role='admin' WHERE id=2", 'write', ADM).ok, 'users table cannot be written via raw SQL (privilege escalation)');
+  ok(!guard.checkSql("UPDATE settings SET value='x' WHERE key='backup_dir'", 'write', EMP).ok, 'employee cannot change settings');
+  ok(guard.checkSql('INSERT INTO settings(key, value) VALUES(:k,:v) ON CONFLICT(key) DO UPDATE SET value=:v', 'write', ADM).ok, 'admin can save settings');
+  ok(!guard.checkSql('DROP TABLE members', 'write', ADM).ok, 'DROP refused');
+  ok(!guard.checkSql('SELECT 1; DELETE FROM members', 'read', ADM).ok, 'stacked statements refused');
+  ok(!guard.checkSql('DELETE FROM members', 'read', ADM).ok, 'db:all only accepts SELECT');
+  ok(!guard.checkSql('SELECT * FROM members', 'write', ADM).ok, 'db:run only accepts INSERT/UPDATE/DELETE');
+  ok(!guard.checkSql("ATTACH DATABASE 'x.db' AS x", 'write', ADM).ok, 'ATTACH refused');
+  ok(!guard.checkSql('SELECT sql FROM sqlite_master', 'read', ADM).ok, 'sqlite_master refused');
+  ok(!guard.checkSql('SELECT * FROM members -- comment', 'read', ADM).ok, 'SQL comments refused');
+  ok(guard.validRole('admin') && guard.validRole('employee') && !guard.validRole('root'), 'only admin/employee roles accepted');
+  ok(!guard.validPassword('12345') && guard.validPassword('123456'), 'password minimum length enforced');
+
+  let fakeNow = 1000000;
+  const lim = new guard.LoginLimiter({ maxFails: 3, baseLockMs: 1000, now: () => fakeNow });
+  lim.fail('Kamal'); lim.fail('Kamal');
+  eq(lim.retryAfter('Kamal'), 0, 'login allowed below failure threshold');
+  lim.fail('kamal ');
+  ok(lim.retryAfter('Kamal') > 0, 'login locked after repeated failures (case/space-insensitive)');
+  ok(lim.retryAfter('other') === 0, 'lock is per-username');
+  fakeNow += 1001;
+  eq(lim.retryAfter('Kamal'), 0, 'lock expires');
+  lim.fail('Kamal');
+  ok(lim.retryAfter('Kamal') >= 2000, 'lock duration grows on further failures');
+  lim.success('Kamal');
+  eq(lim.retryAfter('Kamal'), 0, 'successful login clears the lock');
+
   console.log('\n========================================');
   console.log('  ' + passed + ' passed, ' + failed + ' failed');
   console.log('========================================\n');

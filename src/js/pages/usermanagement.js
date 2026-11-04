@@ -4,7 +4,8 @@
   let filter = { q: '', status: 'all' };
 
   async function fetchUsers() {
-    return api.all('SELECT * FROM users ORDER BY created_at DESC, id DESC');
+    // explicit columns: password hashes/salts never leave the main process
+    return api.all('SELECT id, username, role, employee_id, active, created_at, full_name, phone, position, last_login FROM users ORDER BY created_at DESC, id DESC');
   }
 
   function applyFilter(rows) {
@@ -126,13 +127,15 @@
             if (!r.ok) { UI.toast(r.error, 'error'); return; }
             UI.log('تغيير صلاحية مستخدم', 'users', u.id, username + ' ← ' + (fRole.value === 'admin' ? 'مدير' : 'موظف'));
           }
-          await api.updateProfile(u.id, { fullName, phone: fPhone.value.trim(), position: fPosition.value });
+          const pr = await api.updateProfile(u.id, { fullName, phone: fPhone.value.trim(), position: fPosition.value });
+          if (pr && pr.ok === false) { UI.toast(pr.error, 'error'); return; }
           UI.log('تعديل مستخدم', 'users', u.id, username);
           UI.toast('تم حفظ التعديلات');
         } else {
           if (!fPass.value || fPass.value.length < 6) { UI.toast('كلمة المرور يجب ألا تقل عن 6 أحرف', 'error'); return; }
           if (fPass.value !== fConfirm.value) { UI.toast('كلمة المرور وتأكيدها غير متطابقين', 'error'); return; }
           const r = await api.createUser(username, fPass.value, fRole.value, { fullName, phone: fPhone.value.trim(), position: fPosition.value });
+          if (!r || r.ok === false) { UI.toast((r && r.error) || 'تعذّر إنشاء المستخدم', 'error'); return; }
           UI.log('إنشاء مستخدم', 'users', r.lastId, fullName + ' (' + username + ')');
           UI.toast('تم إنشاء المستخدم بنجاح');
         }
@@ -163,7 +166,8 @@
     save.onclick = async () => {
       if (fPass.value.length < 6) { UI.toast('كلمة المرور يجب ألا تقل عن 6 أحرف', 'error'); return; }
       if (fPass.value !== fConfirm.value) { UI.toast('كلمة المرور وتأكيدها غير متطابقين', 'error'); return; }
-      await api.setPassword(user.id, fPass.value);
+      const res = await api.setPassword(user.id, fPass.value);
+      if (!res || res.ok === false) { UI.toast((res && res.error) || 'تعذّر تغيير كلمة المرور', 'error'); return; }
       // logged WITHOUT the password value — target account + who did it only
       UI.log('إعادة تعيين كلمة المرور', 'users', user.id, user.username);
       UI.toast('تمت إعادة تعيين كلمة المرور بنجاح');

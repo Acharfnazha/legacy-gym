@@ -8,6 +8,7 @@ const fs = require('fs');
 const db = require('./db');
 const license = require('./license');
 const killswitch = require('./killswitch');
+const guard = require('./guard');
 
 /* Force Chromium's application locale so native <input type="date">/type="month">
    (and plain number inputs) render day/month/year order with WESTERN (English)
@@ -41,7 +42,14 @@ function isLicensed(dataDir) {
   _licensed = license.isActivated(dataDir, { devBypass: false });
   return _licensed;
 }
-const sessions = new Map(); // webContents.id -> authenticated user role
+const sessions = new Map(); // webContents.id -> authenticated user { id, role }
+const loginLimiter = new guard.LoginLimiter();
+
+/* Session helpers — every privileged IPC handler re-checks these in the MAIN
+   process; the renderer's own role checks are UX only and can be bypassed. */
+function sessionOf(e) { return sessions.get(e.sender.id); }
+function isAdminSession(e) { const s = sessionOf(e); return !!(s && s.role === 'admin'); }
+const DENIED = { ok: false, error: 'لا تملك صلاحية تنفيذ هذه العملية' };
 
 /* Data lives next to the app when portable (USB), in the project folder during dev. */
 function resolveDataDir() {
@@ -112,16 +120,36 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      // DevTools would let anyone at the keyboard (e.g. an employee) call the
+      // IPC bridge directly — disabled in the packaged build delivered to clients.
+      devTools: !app.isPackaged,
       spellcheck: false
     }
   });
+  const wcId = win.webContents.id;
   win.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
   if (process.env.IRONCORE_SMOKE) runSmoke();
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+    if (/^https:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // The app is a single local page: never navigate the window anywhere else
+  // (a remote page would inherit the privileged preload bridge).
+  const appUrl = require('url').pathToFileURL(path.join(__dirname, '..', 'src', 'index.html')).href;
+  win.webContents.on('will-navigate', (ev, url) => {
+    if (url.split('#')[0] !== appUrl) ev.preventDefault();
+  });
+  win.webContents.on('will-attach-webview', (ev) => ev.preventDefault());
+  // Any (re)load of the page starts logged out: drop the main-process session too.
+  win.webContents.on('did-start-navigation', (details) => {
+    // Electron passes an Event carrying { isMainFrame, isSameDocument }
+    if (details && details.isMainFrame !== false && !details.isSameDocument) sessions.delete(wcId);
+  });
+  win.webContents.on('render-process-gone', () => sessions.delete(wcId));
+  win.on('closed', () => { sessions.delete(wcId); win = null; });
 }
 
 /* E2E smoke: IRONCORE_SMOKE=1
@@ -141,8 +169,8 @@ function runSmoke() {
   let phase = 1;
   let failed = false;
 
-  win.webContents.on('console-message', (e, level, msg) => {
-    if (level >= 2) console.log('[renderer-console-error]', msg);
+  win.webContents.on('console-message', (e) => {
+    if (e.level === 'warning' || e.level === 'error') console.log('[renderer-console-error]', e.message);
   });
 
   const timeout = setTimeout(() => { console.log('[smoke] TIMEOUT waiting for logout reload'); app.exit(1); }, 60000);
@@ -205,6 +233,33 @@ function runSmoke() {
               const blockedOk = blocked === 'cashbox' ? activePage === 'dashboard' : after === before;
               out.push(blockedOk ? 'OK ' + blocked + ' blocked for employee' : 'SECURITY FAIL: employee reached ' + blocked);
             }
+            // direct attacks on the IPC bridge (as if typed into DevTools)
+            const me = UI.session.user;
+            const tryCall = async (fn) => { try { return await fn(); } catch (err) { return { thrown: err.message }; } };
+            const esc1 = await tryCall(() => api.run("UPDATE users SET role='admin' WHERE id=" + me.id));
+            out.push(esc1 && esc1.thrown ? 'OK raw SQL privilege escalation blocked' : 'SECURITY FAIL: raw SQL wrote users table');
+            const esc2 = await tryCall(() => api.setRole(me.id, 'admin'));
+            out.push(esc2 && esc2.ok === false ? 'OK setRole blocked for employee' : 'SECURITY FAIL: employee changed a role');
+            const esc3 = await tryCall(() => api.createUser('evil', 'evil123', 'admin'));
+            out.push(esc3 && esc3.ok === false ? 'OK createUser blocked for employee' : 'SECURITY FAIL: employee created a user');
+            const esc4 = await tryCall(() => api.all('SELECT password_hash, salt FROM users'));
+            out.push(esc4 && esc4.thrown ? 'OK password hashes unreadable' : 'SECURITY FAIL: password hashes readable');
+            const esc5 = await tryCall(() => api.backupRestore('C:/evil.db'));
+            out.push(esc5 && esc5.ok === false ? 'OK backup restore blocked for employee' : 'SECURITY FAIL: employee restored a backup');
+            out.push(typeof api.openPath === 'undefined' ? 'OK openPath removed from bridge' : 'SECURITY FAIL: openPath still exposed');
+          }
+          if ('${smokeRole}' === 'admin') {
+            // admin user-management round trip through the guarded IPC handlers
+            const c = await api.createUser('smoketmp', 'smoke1234', 'employee', { fullName: 'Smoke Tmp' });
+            const dup = await api.createUser('smoketmp', 'smoke1234', 'employee');
+            const p1 = await api.setPassword(c.lastId, 'smoke5678');
+            const r1 = await api.setRole(c.lastId, 'admin');
+            const r2 = await api.setRole(c.lastId, 'root');
+            const list = await api.all('SELECT id, username, role FROM users');
+            const d = await api.deleteUser(c.lastId);
+            out.push(c.ok && c.lastId && dup.ok === false && p1.ok && r1.ok && r2.ok === false &&
+              list.some(u => u.username === 'smoketmp' && u.role === 'admin') && d.ok
+              ? 'OK admin user management works' : 'FAIL admin user management: ' + JSON.stringify({ c, dup, p1, r1, r2, d }));
           }
           // === real logout: click the button, then the confirm dialog ===
           document.getElementById('logout-btn').click();
@@ -268,13 +323,40 @@ app.on('window-all-closed', () => { db.close(); app.quit(); });
 app.on('before-quit', () => db.persistNow());
 
 function registerIpc(dataDir) {
-  ipcMain.handle('db:all', (e, sql, params) => isLicensed(dataDir) ? db.all(sql, params) : []);
-  ipcMain.handle('db:run', (e, sql, params) => isLicensed(dataDir) ? db.run(sql, params) : { changes: 0, lastId: null });
+  /* Generic SQL bridge — only for a logged-in session, one plain statement,
+     never touching password material or the schema (see guard.checkSql). */
+  ipcMain.handle('db:all', (e, sql, params) => {
+    if (!isLicensed(dataDir)) return [];
+    const chk = guard.checkSql(sql, 'read', sessionOf(e));
+    if (!chk.ok) throw new Error('SQL rejected: ' + chk.error);
+    return db.all(sql, params);
+  });
+  ipcMain.handle('db:run', (e, sql, params) => {
+    if (!isLicensed(dataDir)) return { changes: 0, lastId: null };
+    const chk = guard.checkSql(sql, 'write', sessionOf(e));
+    if (!chk.ok) throw new Error('SQL rejected: ' + chk.error);
+    return db.run(sql, params);
+  });
   ipcMain.handle('auth:login', (e, u, p) => {
     if (!isLicensed(dataDir)) return { ok: false, error: 'النظام غير مُفعّل على هذا الجهاز' };
+    sessions.delete(e.sender.id);
+    if (typeof u !== 'string' || typeof p !== 'string') return { ok: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة' };
+    const wait = loginLimiter.retryAfter(u);
+    if (wait > 0) {
+      return { ok: false, error: 'محاولات دخول خاطئة كثيرة — حاول مجددًا بعد ' + Math.ceil(wait / 1000) + ' ثانية' };
+    }
     const result = db.login(u, p);
-    if (result.ok) sessions.set(e.sender.id, { id: result.user.id, role: result.user.role });
-    else sessions.delete(e.sender.id);
+    if (!result.ok) {
+      loginLimiter.fail(u);
+      db.run('INSERT INTO activity_log(username, action, entity, details, created_at) VALUES(:u,\'محاولة دخول فاشلة\',\'auth\',\'\',:t)',
+        { ':u': String(u).trim().slice(0, 64), ':t': db.nowStr() });
+      // same message for "unknown user" and "wrong password" (no username enumeration)
+      return { ok: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة، أو الحساب موقوف' };
+    }
+    loginLimiter.success(u);
+    sessions.set(e.sender.id, { id: result.user.id, role: result.user.role });
+    // flag the well-known factory password so the UI can insist on changing it
+    result.weakPassword = p === '123456';
     return result;
   });
   ipcMain.handle('auth:logout', (e) => {
@@ -298,15 +380,62 @@ function registerIpc(dataDir) {
       sales: db.all('SELECT * FROM sales WHERE created_at >= :a AND created_at < :b ORDER BY id', params)
     };
   });
-  ipcMain.handle('auth:createUser', (e, u, p, role, extra) => db.createUser(u, p, role, extra));
-  ipcMain.handle('auth:setPassword', (e, id, p) => db.setPassword(id, p));
-  ipcMain.handle('auth:changeOwnPassword', (e, id, current, next) => db.changeOwnPassword(id, current, next));
-  ipcMain.handle('auth:setUsername', (e, id, username) => db.setUsername(id, username));
-  ipcMain.handle('auth:updateProfile', (e, id, profile) => db.updateUserProfile(id, profile));
-  ipcMain.handle('auth:setRole', (e, id, role) => db.setRole(id, role));
-  ipcMain.handle('auth:setActive', (e, id, active) => db.setActive(id, active));
-  ipcMain.handle('auth:deleteUser', (e, id) => db.deleteUser(id));
-  ipcMain.handle('app:clockWarning', () => clockWarning);
+  /* ---- User management: ADMIN session required, inputs validated here ---- */
+  const BAD_PASS = { ok: false, error: 'كلمة المرور يجب ألا تقل عن ' + guard.MIN_PASSWORD + ' أحرف' };
+  ipcMain.handle('auth:createUser', (e, u, p, role, extra) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validUsername(u)) return { ok: false, error: 'اسم المستخدم مطلوب' };
+    if (!guard.validPassword(p)) return BAD_PASS;
+    if (!guard.validRole(role)) return { ok: false, error: 'صلاحية غير صالحة' };
+    if (db.all('SELECT id FROM users WHERE username = :u', { ':u': u.trim() }).length) {
+      return { ok: false, error: 'اسم المستخدم مستخدم مسبقًا' };
+    }
+    const r = db.createUser(u.trim(), p, role, extra);
+    return Object.assign({ ok: true }, r);
+  });
+  ipcMain.handle('auth:setPassword', (e, id, p) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    if (!guard.validPassword(p)) return BAD_PASS;
+    return Object.assign({ ok: true }, db.setPassword(Number(id), p));
+  });
+  // any logged-in user, but ONLY for their own account (+ current password)
+  ipcMain.handle('auth:changeOwnPassword', (e, id, current, next) => {
+    const s = sessionOf(e);
+    if (!s || Number(id) !== s.id) return DENIED;
+    if (typeof current !== 'string' || !guard.validPassword(next)) return BAD_PASS;
+    return db.changeOwnPassword(s.id, current, next);
+  });
+  ipcMain.handle('auth:setUsername', (e, id, username) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    if (!guard.validUsername(username)) return { ok: false, error: 'اسم المستخدم مطلوب' };
+    return db.setUsername(Number(id), username);
+  });
+  ipcMain.handle('auth:updateProfile', (e, id, profile) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    const p = profile && typeof profile === 'object' ? profile : {};
+    const clip = (v) => String(v == null ? '' : v).slice(0, guard.MAX_FIELD);
+    return db.updateUserProfile(Number(id), { fullName: clip(p.fullName), phone: clip(p.phone), position: clip(p.position) });
+  });
+  ipcMain.handle('auth:setRole', (e, id, role) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    if (!guard.validRole(role)) return { ok: false, error: 'صلاحية غير صالحة' };
+    return db.setRole(Number(id), role);
+  });
+  ipcMain.handle('auth:setActive', (e, id, active) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    return db.setActive(Number(id), !!active);
+  });
+  ipcMain.handle('auth:deleteUser', (e, id) => {
+    if (!isAdminSession(e)) return DENIED;
+    if (!guard.validId(id)) return { ok: false, error: 'المستخدم غير موجود' };
+    return db.deleteUser(Number(id));
+  });
+  ipcMain.handle('app:clockWarning', (e) => (isAdminSession(e) ? clockWarning : null));
   ipcMain.handle('app:version', () => app.getVersion());
 
   // ---- Activation (hardware-locked, lifetime, offline) ----
@@ -325,18 +454,21 @@ function registerIpc(dataDir) {
     return { suspended: killswitch.current() === 'suspended', machineId: license.machineId() };
   });
 
-  ipcMain.handle('backup:now', async () => {
+  ipcMain.handle('backup:now', async (e) => {
+    if (!isAdminSession(e)) return DENIED;
     const dir = db.getSetting('backup_dir', '') || path.join(dataDir, 'backups');
     const dest = db.backupTo(dir);
     return { ok: true, path: dest };
   });
-  ipcMain.handle('backup:chooseDir', async () => {
+  ipcMain.handle('backup:chooseDir', async (e) => {
+    if (!isAdminSession(e)) return null;
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     if (r.canceled || !r.filePaths.length) return null;
     db.setSetting('backup_dir', r.filePaths[0]);
     return r.filePaths[0];
   });
-  ipcMain.handle('backup:list', () => {
+  ipcMain.handle('backup:list', (e) => {
+    if (!isAdminSession(e)) return [];
     const dir = db.getSetting('backup_dir', '') || path.join(dataDir, 'backups');
     try {
       return fs.readdirSync(dir)
@@ -349,8 +481,16 @@ function registerIpc(dataDir) {
     } catch (e) { return []; }
   });
   ipcMain.handle('backup:restore', async (e, file) => {
-    let target = file;
-    if (!target) {
+    if (!isAdminSession(e)) return DENIED;
+    let target = null;
+    if (file) {
+      // only a file that is actually listed in the backup folder may be passed in;
+      // anything else must be picked by the admin through the native dialog
+      const dir = path.resolve(db.getSetting('backup_dir', '') || path.join(dataDir, 'backups'));
+      const resolved = path.resolve(String(file));
+      if (path.dirname(resolved) !== dir || !/\.db$/i.test(resolved)) return { ok: false, error: 'مسار النسخة غير صالح' };
+      target = resolved;
+    } else {
       const r = await dialog.showOpenDialog(win, {
         title: 'اختيار نسخة احتياطية',
         filters: [{ name: 'Database', extensions: ['db'] }],
@@ -364,12 +504,14 @@ function registerIpc(dataDir) {
       const safety = path.join(dataDir, 'backups');
       db.backupTo(safety);
       db.restoreFrom(target);
+      sessions.clear(); // restored data may have different accounts: force a fresh login
       return { ok: true };
     } catch (err) {
       return { ok: false, error: 'الملف غير صالح أو تالف: ' + err.message };
     }
   });
-  ipcMain.handle('backup:openDir', () => {
+  ipcMain.handle('backup:openDir', (e) => {
+    if (!isAdminSession(e)) return null;
     const dir = db.getSetting('backup_dir', '') || path.join(dataDir, 'backups');
     fs.mkdirSync(dir, { recursive: true });
     shell.openPath(dir);
@@ -377,6 +519,7 @@ function registerIpc(dataDir) {
   });
 
   ipcMain.handle('export:csv', async (e, suggestedName, csvContent) => {
+    if (!sessionOf(e)) return DENIED;
     const r = await dialog.showSaveDialog(win, {
       title: 'تصدير Excel (CSV)',
       defaultPath: suggestedName,
@@ -384,11 +527,12 @@ function registerIpc(dataDir) {
     });
     if (r.canceled || !r.filePath) return { ok: false, cancelled: true };
     // UTF-8 BOM so Excel renders Arabic correctly
-    fs.writeFileSync(r.filePath, '﻿' + csvContent, 'utf8');
+    fs.writeFileSync(r.filePath, '﻿' + String(csvContent == null ? '' : csvContent), 'utf8');
     return { ok: true, path: r.filePath };
   });
 
   ipcMain.handle('export:pdf', async (e, suggestedName) => {
+    if (!sessionOf(e)) return DENIED;
     const r = await dialog.showSaveDialog(win, {
       title: 'تصدير PDF',
       defaultPath: suggestedName,
@@ -405,5 +549,6 @@ function registerIpc(dataDir) {
     return { ok: true, path: r.filePath };
   });
 
-  ipcMain.handle('app:openPath', (e, p) => shell.openPath(p));
+  // NOTE: the former 'app:openPath' handler was removed — it let the renderer
+  // open/launch ANY file on the machine (shell.openPath runs executables).
 }

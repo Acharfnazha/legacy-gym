@@ -25,6 +25,5 @@ contextBridge.exposeInMainWorld('api', {
   backupRestore: (file) => ipcRenderer.invoke('backup:restore', file),
   backupOpenDir: () => ipcRenderer.invoke('backup:openDir'),
   exportCsv: (name, content) => ipcRenderer.invoke('export:csv', name, content),
-  exportPdf: (name) => ipcRenderer.invoke('export:pdf', name),
-  openPath: (p) => ipcRenderer.invoke('app:openPath', p)
+  exportPdf: (name) => ipcRenderer.invoke('export:pdf', name)
 });

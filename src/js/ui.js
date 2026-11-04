@@ -332,7 +332,14 @@
 
   /* ---- CSV export ---- */
   UI.exportCsv = async (filename, headers, rows) => {
-    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    // CSV/formula injection guard: a text cell starting with = + - @ (or tab/CR)
+    // would be executed by Excel as a formula (e.g. a member named "=HYPERLINK(...)").
+    // Prefix such cells with an apostrophe; real numbers (e.g. -5) are left as-is.
+    const q = (v) => {
+      let s = String(v == null ? '' : v);
+      if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s) && !/^[-+]?\d+(\.\d+)?$/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
     const lines = [headers.map(q).join(',')];
     rows.forEach(r => lines.push(r.map(q).join(',')));
     const res = await api.exportCsv(filename, lines.join('\r\n'));

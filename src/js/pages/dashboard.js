@@ -108,7 +108,9 @@
       const cols = UI.el('div', { class: 'grid', style: 'grid-template-columns: 1.2fr 1fr; margin-top:14px; align-items:start' });
 
       const listCard = UI.el('div', { class: 'card' });
-      listCard.innerHTML = '<div class="card-title">اشتراكات منتهية أو متأخرة <button class="btn btn-sm btn-ghost" onclick="navigate(\'subscriptions\')">عرض الكل</button></div>';
+      listCard.innerHTML = '<div class="card-title">اشتراكات منتهية أو متأخرة <button type="button" class="btn btn-sm btn-ghost" data-go="subscriptions">عرض الكل</button></div>';
+      // inline onclick="" is blocked by the page CSP — bind the handler in JS instead
+      listCard.querySelector('[data-go]').addEventListener('click', () => navigate('subscriptions'));
       listCard.appendChild(UI.table({
         columns: [
           { label: 'ID', key: 'member_id', num: true },

@@ -212,6 +212,15 @@ function hashPassword(password, salt) {
   return { salt, hash };
 }
 
+/* Constant-time comparison of two hex hashes (avoids timing side channels). */
+function sameHash(a, b) {
+  const x = Buffer.from(String(a || ''), 'hex');
+  const y = Buffer.from(String(b || ''), 'hex');
+  return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
+}
+// used to burn the same scrypt time for unknown usernames (no user enumeration by timing)
+const DUMMY_SALT = crypto.randomBytes(16).toString('hex');
+
 function persistSoon() {
   dirty = true;
   if (saveTimer) return;
@@ -393,11 +402,14 @@ async function init(options) {
 
 /* -------- Auth -------- */
 function login(username, password) {
-  const rows = all('SELECT * FROM users WHERE username = :u AND active = 1', { ':u': String(username).trim() });
-  if (!rows.length) return { ok: false, error: 'اسم المستخدم غير موجود أو الحساب موقوف' };
+  const rows = all('SELECT * FROM users WHERE username = :u AND active = 1', { ':u': String(username == null ? '' : username).trim() });
+  if (!rows.length) {
+    hashPassword(String(password == null ? '' : password), DUMMY_SALT);
+    return { ok: false, error: 'اسم المستخدم غير موجود أو الحساب موقوف' };
+  }
   const u = rows[0];
-  const { hash } = hashPassword(password, u.salt);
-  if (hash !== u.password_hash) return { ok: false, error: 'كلمة المرور غير صحيحة' };
+  const { hash } = hashPassword(String(password == null ? '' : password), u.salt);
+  if (!sameHash(hash, u.password_hash)) return { ok: false, error: 'كلمة المرور غير صحيحة' };
   run('UPDATE users SET last_login = :t WHERE id = :id', { ':t': nowStr(), ':id': u.id });
   run('INSERT INTO activity_log(username, action, entity, details, created_at) VALUES(:u,\'تسجيل دخول\',\'auth\',\'\',:t)', { ':u': u.username, ':t': nowStr() });
   return { ok: true, user: { id: u.id, username: u.username, role: u.role } };
@@ -420,8 +432,8 @@ function setPassword(userId, password) {
 function verifyPassword(userId, password) {
   const rows = all('SELECT * FROM users WHERE id = :id', { ':id': userId });
   if (!rows.length) return false;
-  const { hash } = hashPassword(password, rows[0].salt);
-  return hash === rows[0].password_hash;
+  const { hash } = hashPassword(String(password == null ? '' : password), rows[0].salt);
+  return sameHash(hash, rows[0].password_hash);
 }
 
 /* Admin (or any user) changing their OWN password — requires the current password. */

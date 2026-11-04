@@ -157,7 +157,14 @@
         return;
       }
       document.getElementById('login-pass').value = '';
-      enterApp(res.user);
+      await enterApp(res.user);
+      if (res.weakPassword) {
+        UI.modal({
+          title: 'تحذير أمني: كلمة المرور الافتراضية',
+          body: '<div class="alert danger" style="margin:0">هذا الحساب يستخدم كلمة المرور الافتراضية المعروفة (123456). '
+            + 'يرجى تغييرها فورًا' + (res.user.role === 'admin' ? ' من: الإعدادات ← إدارة المستخدمين ← حسابي.' : ' عبر المدير.') + '</div>'
+        });
+      }
     });
 
     document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -200,7 +207,7 @@
   async function boot() {
     // minimum splash time so the brand moment reads
     const t0 = Date.now();
-    try { await api.all('SELECT 1'); } catch (e) { /* db warms up via IPC */ }
+    try { await api.version(); } catch (e) { /* IPC warm-up (raw SQL needs a login) */ }
     let lic = { activated: true, machineId: '' };
     try { lic = await api.licenseStatus(); } catch (e) { /* if unavailable, don't hard-block */ }
     const wait = Math.max(0, 1400 - (Date.now() - t0));
